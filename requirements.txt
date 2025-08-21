@@ -32,3 +32,4 @@ decord
 ray[default]
 jaxtyping
 transformers
+rerun-sdk

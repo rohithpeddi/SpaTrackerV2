@@ -103,6 +103,27 @@ python inference.py --data_type="RGBD" --data_dir="assets/example1" --video_name
 ### Visualize your results
 Guidance will be displayed in the terminal after running `inference.py`.
 
+#### Visualization Options
+
+1. **Original TAPIP3D Visualizer** (as mentioned in the terminal output):
+   ```bash
+   python tapip3d_viz.py path/to/results.npz
+   ```
+
+2. **New Rerun 3D Visualizer** (interactive 3D visualization):
+   ```bash
+   # Install rerun-sdk first
+   pip install rerun-sdk
+   
+   # Basic visualization
+   python rerun_visualizer.py path/to/results.npz
+   
+   # Interactive mode
+   python rerun_visualizer.py path/to/results.npz --interactive
+   ```
+   
+   See [RERUN_VISUALIZER_README.md](RERUN_VISUALIZER_README.md) for detailed usage instructions.
+
 ## 🌟 Recommended: Gradio Demo with SAM 🌟
 Please follow the instructions in the [app_3rd README](app_3rd/README.md) to configure the dependencies. Then, install the required packages: 
 ```

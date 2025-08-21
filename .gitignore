@@ -18,6 +18,8 @@ dist_encrypted
 # remove the dependencies
 deps
 
+.idea/*
+
 # filter the __pycache__ files
 __pycache__/
 /**/**/__pycache__
