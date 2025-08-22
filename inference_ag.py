@@ -1,6 +1,6 @@
 import argparse
 import os
-
+import pickle
 import cv2
 import numpy as np
 import torch
@@ -39,6 +39,11 @@ if __name__ == "__main__":
     vggt4track_model.eval()
     vggt4track_model = vggt4track_model.to("cuda")
 
+    video_id_frame_id_list_pkl_file_path = "/data/rohith/ag/4d_video_frame_id_list.pkl"
+    if os.path.exists(video_id_frame_id_list_pkl_file_path):
+        with open(video_id_frame_id_list_pkl_file_path, "rb") as f:
+            video_id_frame_id_list = pickle.load(f)
+
     if args.data_type == "RGBD":
         npz_dir = args.data_dir + f"/{args.video_name}.npz"
         data_npz_load = dict(np.load(npz_dir, allow_pickle=True))
@@ -56,13 +61,15 @@ if __name__ == "__main__":
     elif args.data_type == "RGB":
         # Read frames from directory instead of video file
         frames_dir = os.path.join(args.data_dir, f"{args.video_name}.mp4")
-        frame_files = []
-        frame_files.sort()
-        # Load frames using OpenCV
+        # frame_files = os.listdir(frames_dir)
+
+        frame_id_list = video_id_frame_id_list[f"{args.video_name}.mp4"]
+        frame_id_list = sorted(list(np.unique(frame_id_list)))
+
         frames = []
-        for frame_file in frame_files:
-            frame_path = os.path.join(frames_dir, frame_file)
-            frame = cv2.imread(frame_path)
+        for frame_id in frame_id_list:
+            img_path = os.path.join(frames_dir, f"{frame_id:06d}.png")
+            frame = cv2.imread(img_path)
             if frame is not None:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Convert BGR to RGB
                 frames.append(frame)
