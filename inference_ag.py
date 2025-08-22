@@ -2,7 +2,6 @@ import argparse
 import os
 
 import cv2
-import decord
 import numpy as np
 import torch
 import torchvision.transforms as T
@@ -18,9 +17,11 @@ from models.SpaTrackV2.utils.visualizer import Visualizer
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--track_mode", type=str, default="offline")
-    parser.add_argument("--data_type", type=str, default="RGBD")
+    parser.add_argument("--data_type", type=str, default="RGBD", choices=["RGBD", "RGB"], 
+                       help="RGBD: read from .npz file, RGB: read frames from directory")
     parser.add_argument("--data_dir", type=str, default="assets/example0")
     parser.add_argument("--video_name", type=str, default="snowboard")
+    parser.add_argument("--frames_dir", type=str, default="", help="Directory containing video frames (for RGB mode)")
     parser.add_argument("--grid_size", type=int, default=10)
     parser.add_argument("--vo_points", type=int, default=756)
     parser.add_argument("--fps", type=int, default=1)
@@ -53,11 +54,21 @@ if __name__ == "__main__":
         extrs = extrs[::fps]
         unc_metric = None
     elif args.data_type == "RGB":
-        vid_dir = os.path.join(args.data_dir, f"{args.video_name}.mp4")
-        video_reader = decord.VideoReader(vid_dir)
-        video_tensor = torch.from_numpy(video_reader.get_batch(range(len(video_reader))).asnumpy()).permute(0, 3, 1,
-                                                                                                            2)  # Convert to tensor and permute to (N, C, H, W)
-        video_tensor = video_tensor[::fps].float()
+        # Read frames from directory instead of video file
+        frames_dir = os.path.join(args.data_dir, f"{args.video_name}.mp4")
+        frame_files = []
+        frame_files.sort()
+        # Load frames using OpenCV
+        frames = []
+        for frame_file in frame_files:
+            frame_path = os.path.join(frames_dir, frame_file)
+            frame = cv2.imread(frame_path)
+            if frame is not None:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Convert BGR to RGB
+                frames.append(frame)
+        
+        # Convert frames to tensor format (N, C, H, W)
+        video_tensor = torch.from_numpy(np.stack(frames)).permute(0, 3, 1, 2).float()
 
         # process the image tensor
         video_tensor = preprocess_image(video_tensor)[None]
