@@ -39,24 +39,7 @@ class RerunVisualizer:
         rr.init("SpaTrackerV2 Results", spawn=True)
 
         # Load data
-        self._load_data()
-
-    def _load_data(self):
-        """Load data from the npz file."""
-        try:
-            self.data = dict(np.load(self.npz_path, allow_pickle=True))
-            logger.info(f"Loaded data from {self.npz_path}")
-
-            # Log data structure
-            for key, value in self.data.items():
-                if isinstance(value, np.ndarray):
-                    logger.info(f"{key}: {value.shape} {value.dtype}")
-                else:
-                    logger.info(f"{key}: {type(value)}")
-
-        except Exception as e:
-            logger.error(f"Failed to load data from {self.npz_path}: {e}")
-            raise
+        self.data = dict(np.load(self.npz_path, allow_pickle=True))
 
     def _setup_scene(self):
         """Set up the 3D scene with coordinate systems and cameras."""
@@ -85,141 +68,98 @@ class RerunVisualizer:
                 logger.info(f"Camera: fx={fx:.2f}, fy={fy:.2f}, cx={cx:.2f}, cy={cy:.2f}")
                 logger.info(f"Image dimensions: {width:.0f}x{height:.0f}")
 
-    def _log_trajectories(self, frame_idx: int):
-        """Log 3D trajectories for a specific frame."""
-        if "coords" not in self.data:
-            return
+    def _create_point_cloud_from_depth(self, depth_map, intrinsics, extrinsics, max_points=10000):
+        """
+        Create a point cloud from depth map using camera intrinsics and extrinsics.
+        
+        Args:
+            depth_map: Depth map (H, W)
+            intrinsics: Camera intrinsics matrix (3, 3)
+            extrinsics: Camera extrinsics matrix (4, 4)
+            max_points: Maximum number of points to sample
+            
+        Returns:
+            points_3d: 3D points in world coordinates (N, 3)
+            colors: RGB colors for points (N, 3)
+        """
+        if depth_map is None or intrinsics is None or extrinsics is None:
+            return None, None
+            
+        height, width = depth_map.shape
+        fx, fy = intrinsics[0, 0], intrinsics[1, 1]
+        cx, cy = intrinsics[0, 2], intrinsics[1, 2]
+        
+        # Create grid of pixel coordinates
+        y, x = np.meshgrid(np.arange(height), np.arange(width), indexing='ij')
+        
+        # Filter valid depth values
+        valid_mask = (depth_map > 0) & np.isfinite(depth_map)
+        
+        if not np.any(valid_mask):
+            return None, None
+            
+        # Sample points if too many
+        valid_indices = np.where(valid_mask)
+        if len(valid_indices[0]) > max_points:
+            sample_indices = np.random.choice(len(valid_indices[0]), max_points, replace=False)
+            y = y[valid_indices][sample_indices]
+            x = x[valid_indices][sample_indices]
+            depths = depth_map[valid_indices][sample_indices]
+        else:
+            y = y[valid_indices]
+            x = x[valid_indices]
+            depths = depth_map[valid_indices]
+        
+        # Convert to camera coordinates
+        z = depths
+        x_cam = (x - cx) * z / fx
+        y_cam = (y - cy) * z / fy
+        
+        # Stack into homogeneous coordinates
+        points_cam = np.stack([x_cam, y_cam, z, np.ones_like(z)], axis=1)
+        
+        # Transform to world coordinates
+        points_world = (extrinsics @ points_cam.T).T
+        points_3d = points_world[:, :3]
+        
+        # Create colors (you can modify this to use actual RGB values)
+        # For now, using depth-based coloring
+        normalized_depths = (depths - depths.min()) / (depths.max() - depths.min() + 1e-8)
+        colors = cv2.applyColorMap((normalized_depths * 255).astype(np.uint8), cv2.COLORMAP_VIRIDIS)
+        colors = colors.squeeze()  # Remove extra dimension
+        
+        return points_3d, colors
 
-        coords = self.data["coords"]
-        if frame_idx >= len(coords):
-            return
-
-        # Get trajectories for current frame
-        frame_trajs = coords[frame_idx]  # Shape: (N, 3)
-
-        # Filter out invalid trajectories (NaN or inf)
-        valid_mask = np.isfinite(frame_trajs).all(axis=1)
-        valid_trajs = frame_trajs[valid_mask]
-
-        if len(valid_trajs) == 0:
-            return
-
-        # Log trajectories as points
-        rr.log(f"world/trajectories/frame_{frame_idx}", rr.Points3D(
-            positions=valid_trajs,
-            colors=[[255, 100, 100] for _ in range(len(valid_trajs))],  # Red color
-            radii=[0.01] * len(valid_trajs)
-        ))
-
-        # Log trajectory IDs
-        for i, traj in enumerate(valid_trajs):
-            rr.log(f"world/trajectories/frame_{frame_idx}/traj_{i}", rr.TextDocument(
-                text=f"Track {i}",
-                media_type="text/plain"
-            ))
-
-    def _log_camera_pose(self, frame_idx: int):
-        """Log camera pose for a specific frame."""
-        if "extrinsics" not in self.data:
-            return
-
-        extrinsics = self.data["extrinsics"]
-        if frame_idx >= len(extrinsics):
-            return
-
-        # Get camera pose for current frame
-        camera_pose = extrinsics[frame_idx]
-
-        # Log camera transform
-        translation = camera_pose[:3, 3]  # Extract translation
-        rotation_matrix = camera_pose[:3, :3]
-        rotation_quat = R.from_matrix(rotation_matrix).as_quat()
-        rr.log(f"world/camera/frame_{frame_idx}", rr.Transform3D(
-            translation=translation.tolist(),
-            rotation=rotation_quat.tolist()
-        ))
-
-        # Log camera as a coordinate system
-        rr.log(f"world/camera/frame_{frame_idx}/axes", rr.Arrows3D(
-            origins=[[0, 0, 0]],
-            vectors=[[0.1, 0, 0], [0, 0.1, 0], [0, 0, 0.1]],  # X, Y, Z axes
-            colors=[[255, 0, 0], [0, 255, 0], [0, 0, 255]]  # Red, Green, Blue
-        ))
-
-    def _log_depth_map(self, frame_idx: int):
-        """Log depth map for a specific frame."""
-        if "depths" not in self.data:
+    def _log_point_cloud(self, frame_idx: int):
+        """Log point cloud for a specific frame."""
+        if "depths" not in self.data or "intrinsics" not in self.data or "extrinsics" not in self.data:
             return
 
         depths = self.data["depths"]
+        intrinsics = self.data["intrinsics"]
+        extrinsics = self.data["extrinsics"]
+        
         if frame_idx >= len(depths):
             return
 
         depth_map = depths[frame_idx]
-
-        # Normalize depth for visualization
-        valid_depths = depth_map[depth_map > 0]
-        if len(valid_depths) == 0:
-            return
-
-        min_depth, max_depth = valid_depths.min(), valid_depths.max()
-        if max_depth > min_depth:
-            normalized_depth = (depth_map - min_depth) / (max_depth - min_depth)
-            normalized_depth = np.clip(normalized_depth, 0, 1)
-
-            # Convert to RGB colormap
-            depth_rgb = cv2.applyColorMap(
-                (normalized_depth * 255).astype(np.uint8),
-                cv2.COLORMAP_INFERNO
-            )
-
-            # Log depth map as image
-            rr.log(f"world/depth/frame_{frame_idx}", rr.Image(depth_rgb))
-
-    def _log_video_frame(self, frame_idx: int):
-        """Log RGB video frame for a specific frame."""
-        if "video" not in self.data:
-            return
-
-        video = self.data["video"]
-        if frame_idx >= len(video):
-            return
-
-        # Get frame and convert to uint8
-        frame = video[frame_idx]  # Shape: (C, H, W)
-        if frame.max() <= 1.0:
-            frame = (frame * 255).astype(np.uint8)
-        else:
-            frame = frame.astype(np.uint8)
-
-        # Convert from (C, H, W) to (H, W, C) for rerun
-        frame = np.transpose(frame, (1, 2, 0))
-
-        # Log video frame
-        rr.log(f"world/video/frame_{frame_idx}", rr.Image(frame))
-
-    def _log_visibility_info(self, frame_idx: int):
-        """Log visibility information for trajectories."""
-        if "visibs" not in self.data:
-            return
-
-        visibs = self.data["visibs"]
-        if frame_idx >= len(visibs):
-            return
-
-        visibility = visibs[frame_idx]  # Shape: (N,) or (N, 1)
-        if visibility.ndim > 1:
-            visibility = visibility.squeeze()
-
-        # Count visible tracks
-        visible_count = np.sum(visibility)
-        total_count = len(visibility)
-
-        # Log visibility statistics
-        rr.log(f"world/stats/frame_{frame_idx}", rr.TextDocument(
-            text=f"Frame {frame_idx}: {visible_count}/{total_count} tracks visible",
-            media_type="text/plain"
-        ))
+        frame_intrinsics = intrinsics[frame_idx]
+        frame_extrinsics = extrinsics[frame_idx]
+        
+        # Create point cloud
+        points_3d, colors = self._create_point_cloud_from_depth(
+            depth_map, frame_intrinsics, frame_extrinsics, max_points=5000
+        )
+        
+        if points_3d is not None and len(points_3d) > 0:
+            # Log point cloud
+            rr.log(f"world/point_cloud/frame_{frame_idx}", rr.Points3D(
+                positions=points_3d,
+                colors=colors,
+                radii=[0.005] * len(points_3d)  # Small radius for points
+            ))
+            
+            logger.info(f"Logged point cloud for frame {frame_idx}: {len(points_3d)} points")
 
     def visualize_frame(self, frame_idx: int):
         """Visualize a specific frame with all its data."""
@@ -227,13 +167,7 @@ class RerunVisualizer:
 
         # Set the time for this frame
         rr.set_time_sequence("frame", frame_idx)
-
-        # Log all components for this frame
-        self._log_trajectories(frame_idx)
-        self._log_camera_pose(frame_idx)
-        self._log_depth_map(frame_idx)
-        self._log_video_frame(frame_idx)
-        self._log_visibility_info(frame_idx)
+        self._log_point_cloud(frame_idx)  # Add point cloud visualization
 
     def visualize_all_frames(self):
         """Visualize all frames in the dataset."""
@@ -256,34 +190,6 @@ class RerunVisualizer:
 
         logger.info("Visualization complete!")
 
-    def interactive_visualization(self):
-        """Start interactive visualization with frame navigation."""
-        if "video" in self.data:
-            total_frames = len(self.data["video"])
-        elif "coords" in self.data:
-            total_frames = len(self.data["coords"])
-        else:
-            logger.error("No frame data found")
-            return
-
-        logger.info(f"Starting interactive visualization with {total_frames} frames")
-        logger.info("Use the rerun viewer to navigate through frames")
-
-        # Set up the scene
-        self._setup_scene()
-
-        # Log all frames at once for interactive navigation
-        for frame_idx in range(total_frames):
-            rr.set_time_sequence("frame", frame_idx)
-            self._log_trajectories(frame_idx)
-            self._log_camera_pose(frame_idx)
-            self._log_depth_map(frame_idx)
-            self._log_video_frame(frame_idx)
-            self._log_visibility_info(frame_idx)
-
-        logger.info("Interactive visualization ready! Use the rerun viewer to explore.")
-        logger.info("Press Ctrl+C to exit")
-
 
 def main():
     """Main function for command-line usage."""
@@ -301,11 +207,6 @@ def main():
         type=int,
         default=10,
         help="Frames per second for playback"
-    )
-    parser.add_argument(
-        "--interactive",
-        action="store_true",
-        help="Start interactive visualization mode"
     )
     parser.add_argument(
         "--frame",
